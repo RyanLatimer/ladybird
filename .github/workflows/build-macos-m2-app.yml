@@ -1,9 +1,14 @@
 name: Build macOS M2 .app
 
-# Builds Ladybird.app for Apple Silicon (M1/M2/M3/M4) on GitHub-hosted
-# macOS runners, then uploads Ladybird.app as a .zip + .dmg artifact.
+# Builds a relocatable Ladybird.app for Apple Silicon (M1/M2/M3/M4) on
+# GitHub-hosted macOS runners, then uploads it as a .zip + .dmg artifact.
 # Run it from your fork: Actions tab -> "Build macOS M2 .app" -> Run workflow.
 # No secrets required. Public forks get free macos-15 (arm64) minutes.
+#
+# Uses the upstream Distribution preset (static linking, same as Ladybird's
+# own release pipeline) plus `cmake --install`, which is what turns the
+# in-build bundle into a relocatable .app (dylibs copied in, no absolute
+# build-path references).
 
 on:
   workflow_dispatch:
@@ -33,9 +38,9 @@ jobs:
             .ccache
             Build/caches/vcpkg-binary-cache
             caches/WasmSpecTests
-          key: ladybird-macos-arm64-Release-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'Meta/CMake/wasm_spec_tests.cmake') }}
+          key: ladybird-macos-arm64-Distribution-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'Meta/CMake/wasm_spec_tests.cmake') }}
           restore-keys: |
-            ladybird-macos-arm64-Release-
+            ladybird-macos-arm64-Distribution-
 
       - name: Select Xcode (whatever the runner has)
         shell: bash
@@ -106,21 +111,21 @@ jobs:
 
       - name: Bootstrap vcpkg (mirrors upstream setup action)
         shell: bash
-        run: ./Meta/ladybird.py vcpkg --preset Release
+        run: ./Meta/ladybird.py vcpkg --preset Distribution
 
-      - name: Configure (Release)
+      - name: Configure (Distribution)
         shell: bash
         run: |
           echo "CC=$(xcrun --find clang)" >> "$GITHUB_ENV"
           echo "CXX=$(xcrun --find clang++)" >> "$GITHUB_ENV"
           CC="$(xcrun --find clang)" CXX="$(xcrun --find clang++)" \
-            cmake --preset Release
+            cmake --preset Distribution
 
       - name: Build
         shell: bash
         run: |
           echo "CCACHE_COMPILERCHECK=%compiler% -v" >> "$GITHUB_ENV"
-          cmake --build --preset Release
+          cmake --build --preset Distribution
 
       - name: Save ccache + vcpkg caches
         if: always()
@@ -130,21 +135,32 @@ jobs:
             .ccache
             Build/caches/vcpkg-binary-cache
             caches/WasmSpecTests
-          key: ladybird-macos-arm64-Release-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'Meta/CMake/wasm_spec_tests.cmake') }}-${{ github.run_id }}
+          key: ladybird-macos-arm64-Distribution-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'Meta/CMake/wasm_spec_tests.cmake') }}-${{ github.run_id }}
+
+      - name: Install (relocatable bundle)
+        shell: bash
+        run: |
+          cmake --install Build/distribution --strip --prefix "${GITHUB_WORKSPACE}/Install"
+          echo "--- install tree ---"
+          find Install -maxdepth 3 | head -30
+          test -d Install/bundle/Ladybird.app || (echo "::error::installed Ladybird.app not found"; exit 1)
 
       - name: Verify app bundle
         shell: bash
         run: |
-          ls -la Build/release/bin/ | head -30
-          test -d Build/release/bin/Ladybird.app || (echo "::error::Ladybird.app not found"; exit 1)
+          # No absolute runner paths may survive (would break on any other Mac)
+          if grep -r -l "/Users/runner/work" Install/bundle/Ladybird.app/Contents/MacOS 2>/dev/null | head -3; then
+            echo "WARNING: bundle references runner build paths (see above)"
+          fi
           # Ad-hoc re-sign so it launches on your Mac without a paid cert
-          codesign -s - -v -f --deep Build/release/bin/Ladybird.app || true
-          codesign -dv Build/release/bin/Ladybird.app || true
+          codesign -s - -v -f --deep Install/bundle/Ladybird.app
+          codesign -dv Install/bundle/Ladybird.app || true
+          du -sh Install/bundle/Ladybird.app
 
       - name: Package (.zip + .dmg)
         shell: bash
         run: |
-          cd Build/release/bin
+          cd Install/bundle
           ditto -c -k --sequesterRsrc --keepParent Ladybird.app Ladybird-macOS-arm64.zip
           hdiutil create -volname Ladybird -srcfolder Ladybird.app -ov -format UDZO Ladybird-macOS-arm64.dmg
           ls -lh Ladybird-macOS-arm64.*
@@ -153,7 +169,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Ladybird-macOS-arm64-zip
-          path: Build/release/bin/Ladybird-macOS-arm64.zip
+          path: Install/bundle/Ladybird-macOS-arm64.zip
           compression-level: 0
           if-no-files-found: error
 
@@ -161,6 +177,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Ladybird-macOS-arm64-dmg
-          path: Build/release/bin/Ladybird-macOS-arm64.dmg
+          path: Install/bundle/Ladybird-macOS-arm64.dmg
           compression-level: 0
           if-no-files-found: error
