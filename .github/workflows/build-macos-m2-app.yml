@@ -94,6 +94,10 @@ jobs:
             fi
           done
 
+      - name: Bootstrap vcpkg (mirrors upstream setup action)
+        shell: bash
+        run: ./Meta/ladybird.py vcpkg --preset Release
+
       - name: Configure (Release)
         shell: bash
         run: |
