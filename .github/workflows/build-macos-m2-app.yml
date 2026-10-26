@@ -1,0 +1,76 @@
+name: Build macOS M2 .app
+
+# Builds Ladybird.app for Apple Silicon (M1/M2/M3/M4) on GitHub-hosted
+# macOS runners, then uploads Ladybird.app as a .zip + .dmg artifact.
+# Run it from your fork: Actions tab -> "Build macOS M2 .app" -> Run workflow.
+# No secrets required. Public forks get free macos-15 (arm64) minutes.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [macos-app]
+    paths:
+      - '.github/workflows/build-macos-m2-app.yml'
+
+jobs:
+  build-macos-app:
+    name: macOS arm64 Ladybird.app
+    runs-on: macos-15
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up build environment
+        uses: ./.github/actions/setup
+        with:
+          os: macOS
+          arch: arm64
+          toolchain: Clang
+          build_preset: Release
+
+      - name: Configure (Release)
+        shell: bash
+        run: |
+          echo "CC=$(xcrun --find clang)" >> "$GITHUB_ENV"
+          echo "CXX=$(xcrun --find clang++)" >> "$GITHUB_ENV"
+          CC="$(xcrun --find clang)" CXX="$(xcrun --find clang++)" \
+            cmake --preset Release
+
+      - name: Build
+        shell: bash
+        run: cmake --build --preset Release
+
+      - name: Verify app bundle
+        shell: bash
+        run: |
+          ls -la Build/release/bin/ | head -30
+          test -d Build/release/bin/Ladybird.app || (echo "::error::Ladybird.app not found"; exit 1)
+          # Ad-hoc re-sign so it launches on your Mac without a paid cert
+          codesign -s - -v -f --deep Build/release/bin/Ladybird.app || true
+          codesign -dv Build/release/bin/Ladybird.app || true
+
+      - name: Package (.zip + .dmg)
+        shell: bash
+        run: |
+          cd Build/release/bin
+          ditto -c -k --sequesterRsrc --keepParent Ladybird.app Ladybird-macOS-arm64.zip
+          hdiutil create -volname Ladybird -srcfolder Ladybird.app -ov -format UDZO Ladybird-macOS-arm64.dmg
+          ls -lh Ladybird-macOS-arm64.*
+
+      - name: Upload Ladybird.app (zip)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ladybird-macOS-arm64-zip
+          path: Build/release/bin/Ladybird-macOS-arm64.zip
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Upload Ladybird.app (dmg)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ladybird-macOS-arm64-dmg
+          path: Build/release/bin/Ladybird-macOS-arm64.dmg
+          compression-level: 0
+          if-no-files-found: error
