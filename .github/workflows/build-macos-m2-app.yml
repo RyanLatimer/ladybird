@@ -59,11 +59,40 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Set up Python (mirrors upstream setup action)
+        uses: actions/setup-python@v7
+        with:
+          python-version: 3.12
+          cache: pip
+
       - name: Install Python deps
         shell: bash
         run: |
           python3 -m pip install --upgrade pip
           pip3 install pyyaml requests six cryptography
+
+      - name: Install wasm-tools (mirrors upstream setup action)
+        shell: bash
+        run: |
+          VERSION=1.243.0
+          NAME="wasm-tools-1.243.0-aarch64-macos"
+          if [ ! -d "${GITHUB_WORKSPACE}/wasm-tools" ]; then
+            curl --fail --location --output "${NAME}.tar.gz" \
+              "https://github.com/bytecodealliance/wasm-tools/releases/download/v${VERSION}/${NAME}.tar.gz"
+            tar -xzf "${NAME}.tar.gz"
+            rm "${NAME}.tar.gz"
+            mv "${NAME}" wasm-tools
+          fi
+          echo "${GITHUB_WORKSPACE}/wasm-tools" >> "$GITHUB_PATH"
+
+      - name: Fetch cargo dependencies
+        shell: bash
+        run: |
+          for manifest in Cargo.toml Libraries/LibJS/Flap/Cargo.toml; do
+            if [ -f "${manifest}" ]; then
+              cargo fetch --locked --manifest-path "${manifest}"
+            fi
+          done
 
       - name: Configure (Release)
         shell: bash
