@@ -77,8 +77,18 @@ jobs:
           VERSION=1.243.0
           NAME="wasm-tools-1.243.0-aarch64-macos"
           if [ ! -d "${GITHUB_WORKSPACE}/wasm-tools" ]; then
-            curl --fail --location --output "${NAME}.tar.gz" \
-              "https://github.com/bytecodealliance/wasm-tools/releases/download/v${VERSION}/${NAME}.tar.gz"
+            delays=(5 15 45)
+            attempt=1
+            until curl --fail --location --output "${NAME}.tar.gz" \
+              "https://github.com/bytecodealliance/wasm-tools/releases/download/v${VERSION}/${NAME}.tar.gz"; do
+              if (( attempt > ${#delays[@]} )); then
+                echo "wasm-tools download failed after $(( ${#delays[@]} + 1 )) attempts" >&2
+                exit 1
+              fi
+              echo "wasm-tools download failed; retrying in ${delays[attempt-1]}s" >&2
+              sleep "${delays[attempt-1]}"
+              attempt=$(( attempt + 1 ))
+            done
             tar -xzf "${NAME}.tar.gz"
             rm "${NAME}.tar.gz"
             mv "${NAME}" wasm-tools
