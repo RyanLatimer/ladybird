@@ -148,8 +148,13 @@ ErrorOr<void> munmap(void* address, size_t size)
 static int mmap_anonymous_fd([[maybe_unused]] MemoryTag tag)
 {
 #ifdef AK_OS_MACOS
-    if (tag == MemoryTag::GarbageCollector)
+    if (tag == MemoryTag::GarbageCollector) {
+#ifdef VM_MEMORY_APPLICATION_SPECIFIC_2
+        // NOTE: This tag only exists in newer macOS SDKs (Xcode 26+).
+        // Older SDKs fall through to an untagged mapping, which is equivalent.
         return VM_MAKE_TAG(VM_MEMORY_APPLICATION_SPECIFIC_2);
+#endif
+    }
 #endif
     return -1;
 }
