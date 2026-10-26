@@ -18,9 +18,24 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 360
 
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      LADYBIRD_SOURCE_DIR: ${{ github.workspace }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Restore ccache + vcpkg caches
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            .ccache
+            Build/caches/vcpkg-binary-cache
+            caches/WasmSpecTests
+          key: ladybird-macos-arm64-Release-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'Meta/CMake/wasm_spec_tests.cmake') }}
+          restore-keys: |
+            ladybird-macos-arm64-Release-
 
       - name: Select Xcode (whatever the runner has)
         shell: bash
@@ -60,7 +75,19 @@ jobs:
 
       - name: Build
         shell: bash
-        run: cmake --build --preset Release
+        run: |
+          echo "CCACHE_COMPILERCHECK=%compiler% -v" >> "$GITHUB_ENV"
+          cmake --build --preset Release
+
+      - name: Save ccache + vcpkg caches
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .ccache
+            Build/caches/vcpkg-binary-cache
+            caches/WasmSpecTests
+          key: ladybird-macos-arm64-Release-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'Meta/CMake/wasm_spec_tests.cmake') }}-${{ github.run_id }}
 
       - name: Verify app bundle
         shell: bash
