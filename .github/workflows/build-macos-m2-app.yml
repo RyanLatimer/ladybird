@@ -22,13 +22,33 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up build environment
-        uses: ./.github/actions/setup
-        with:
-          os: macOS
-          arch: arm64
-          toolchain: Clang
-          build_preset: Release
+      - name: Select Xcode (whatever the runner has)
+        shell: bash
+        run: |
+          ls /Applications | grep -i xcode || true
+          xcodebuild -version || true
+          # Use the default Xcode on the runner (Xcode 16.x on macos-15 is fine;
+          # upstream docs only require Xcode 15+). Don't pin 26.6 — that only
+          # exists on Ladybird's self-hosted macos-26 runners.
+          sudo xcode-select -p || true
+
+      - name: Install dependencies (brew)
+        shell: bash
+        run: |
+          brew update
+          brew unlink openssl@3 || true
+          brew install autoconf autoconf-archive automake bash ccache \
+            coreutils libtool llvm@22 nasm ninja pkg-config unzip
+          echo "$(brew --prefix llvm@22)/bin" >> "$GITHUB_PATH"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Python deps
+        shell: bash
+        run: |
+          python3 -m pip install --upgrade pip
+          pip3 install pyyaml requests six cryptography
 
       - name: Configure (Release)
         shell: bash
