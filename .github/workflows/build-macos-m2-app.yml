@@ -169,7 +169,10 @@ jobs:
         run: |
           cmake --install Build/distribution --strip --prefix "${GITHUB_WORKSPACE}/Install"
           echo "--- install tree ---"
-          find Install -maxdepth 3 | head -30
+          # NOTE: `| head` tripped pipefail on macOS (SIGPIPE) and failed the
+          # step even though install had succeeded. Don't pipe find to head.
+          find Install -maxdepth 3 > /tmp/install-tree.txt || true
+          head -30 /tmp/install-tree.txt
           test -d Install/bundle/Ladybird.app || (echo "::error::installed Ladybird.app not found"; exit 1)
 
       - name: Verify app bundle
