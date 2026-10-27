@@ -136,7 +136,8 @@ jobs:
           echo "CXX=$(xcrun --find clang++)" >> "$GITHUB_ENV"
           CC="$(xcrun --find clang)" CXX="$(xcrun --find clang++)" \
             cmake --preset Distribution \
-            -DLADYBIRD_GENERATE_SYMBOL_FILES=OFF
+            -DLADYBIRD_GENERATE_SYMBOL_FILES=OFF \
+            -DBUILD_TESTING=OFF
 
       - name: Prune vcpkg buildtrees (reclaim ~10-20 GB)
         shell: bash
@@ -144,29 +145,14 @@ jobs:
           rm -rf Build/vcpkg-distribution/buildtrees || true
           df -h /
 
-      - name: Build (ship targets only — fits the 6h runner limit)
+      - name: Build
         shell: bash
         run: |
           echo "CCACHE_COMPILERCHECK=%compiler% -v" >> "$GITHUB_ENV"
-          # Full `all` also builds ~100 Test* executables; each static link
-          # takes minutes and blows the 6h GitHub-hosted job limit.
-          # These are exactly the targets InstallRules.cmake ships.
-          cmake --build --preset Distribution --target ladybird WebDriver \
-            AudioServer Compositor ImageDecoder MediaServer RequestServer \
-            VideoDecoderServer WebContent WebWorker ProcessReaper
-
-      - name: Build all Lagom static libraries (needed by cmake --install)
-        shell: bash
-        working-directory: Build/distribution
-        run: |
-          # cmake --install copies every lagom .a into the prefix, so they must
-          # all exist even though the app links them statically. Discover them
-          # from ninja instead of hand-listing ~40 targets.
-          LIBS=$(ninja -t targets all 2>/dev/null | grep -oE '^lib/liblagom-[A-Za-z0-9_.-]+\.a' | sort -u)
-          echo "$LIBS"
-          test -n "$LIBS"
-          # shellcheck disable=SC2086
-          ninja $LIBS
+          # BUILD_TESTING=OFF keeps the ~100 Test* executables (and their
+          # minutes-long static links) out of `all`, so this fits the 6h
+          # hosted-runner limit while building everything install needs.
+          cmake --build --preset Distribution
 
       - name: Save ccache + vcpkg caches
         if: always()
