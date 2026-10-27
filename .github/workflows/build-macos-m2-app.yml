@@ -155,6 +155,19 @@ jobs:
             AudioServer Compositor ImageDecoder MediaServer RequestServer \
             VideoDecoderServer WebContent WebWorker ProcessReaper
 
+      - name: Build all Lagom static libraries (needed by cmake --install)
+        shell: bash
+        working-directory: Build/distribution
+        run: |
+          # cmake --install copies every lagom .a into the prefix, so they must
+          # all exist even though the app links them statically. Discover them
+          # from ninja instead of hand-listing ~40 targets.
+          LIBS=$(ninja -t targets all 2>/dev/null | grep -oE '^lib/liblagom-[A-Za-z0-9_.-]+\.a' | sort -u)
+          echo "$LIBS"
+          test -n "$LIBS"
+          # shellcheck disable=SC2086
+          ninja $LIBS
+
       - name: Save ccache + vcpkg caches
         if: always()
         uses: actions/cache/save@v4
