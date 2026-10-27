@@ -144,11 +144,16 @@ jobs:
           rm -rf Build/vcpkg-distribution/buildtrees || true
           df -h /
 
-      - name: Build
+      - name: Build (ship targets only — fits the 6h runner limit)
         shell: bash
         run: |
           echo "CCACHE_COMPILERCHECK=%compiler% -v" >> "$GITHUB_ENV"
-          cmake --build --preset Distribution
+          # Full `all` also builds ~100 Test* executables; each static link
+          # takes minutes and blows the 6h GitHub-hosted job limit.
+          # These are exactly the targets InstallRules.cmake ships.
+          cmake --build --preset Distribution --target ladybird WebDriver \
+            AudioServer Compositor ImageDecoder MediaServer RequestServer \
+            VideoDecoderServer WebContent WebWorker ProcessReaper
 
       - name: Save ccache + vcpkg caches
         if: always()
