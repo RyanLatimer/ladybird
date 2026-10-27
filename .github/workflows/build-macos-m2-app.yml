@@ -31,6 +31,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Free disk space (macOS runners are tight)
+        shell: bash
+        run: |
+          df -h /
+          # Keep only the newest Xcode; each old one costs ~8-12 GB
+          sudo rm -rf /Applications/Xcode_16.0.app /Applications/Xcode_16.0.0.app \
+            /Applications/Xcode_16.1.app /Applications/Xcode_16.1.0.app \
+            /Applications/Xcode_16.2.app /Applications/Xcode_16.2.0.app \
+            /Applications/Xcode_16.3.app /Applications/Xcode_16.3.0.app || true
+          # Simulator runtimes are not needed to build a Mac app
+          sudo rm -rf /Library/Developer/CoreSimulator/Profiles/Runtimes || true
+          xcrun simctl delete all || true
+          brew cleanup -s || true
+          rm -rf ~/Library/Caches || true
+          df -h /
+
       - name: Restore ccache + vcpkg caches
         uses: actions/cache/restore@v4
         with:
@@ -119,7 +135,14 @@ jobs:
           echo "CC=$(xcrun --find clang)" >> "$GITHUB_ENV"
           echo "CXX=$(xcrun --find clang++)" >> "$GITHUB_ENV"
           CC="$(xcrun --find clang)" CXX="$(xcrun --find clang++)" \
-            cmake --preset Distribution
+            cmake --preset Distribution \
+            -DLADYBIRD_GENERATE_SYMBOL_FILES=OFF
+
+      - name: Prune vcpkg buildtrees (reclaim ~10-20 GB)
+        shell: bash
+        run: |
+          rm -rf Build/vcpkg-distribution/buildtrees || true
+          df -h /
 
       - name: Build
         shell: bash
