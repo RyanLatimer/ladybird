@@ -1,0 +1,247 @@
+name: Build macOS M2 .app
+
+# Builds a relocatable Ladybird.app for Apple Silicon (M1/M2/M3/M4) on
+# GitHub-hosted macOS runners, then uploads it as .zip, .dmg, and .tar.xz
+# artifacts.
+#
+# Run it from your fork: Actions tab -> "Build macOS M2 .app" -> Run workflow.
+# No secrets required. Public forks get free macos-15 (arm64) minutes.
+#
+# Uses the upstream Distribution preset (static libraries, same as Ladybird's
+# own release pipeline) plus `cmake --install`, which turns the in-build
+# bundle into a relocatable .app.
+#
+# We build only the browser + WebDriver targets (the helpers are dependencies
+# of ladybird) and install only the ladybird_Runtime component. That leaves
+# out the JS/Wasm REPLs and every test binary, which keeps a cold build inside
+# the 6-hour hosted-runner limit.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [macos-app]
+    paths:
+      - '.github/workflows/build-macos-m2-app.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-macos-app:
+    name: macOS arm64 Ladybird.app
+    runs-on: macos-15
+    timeout-minutes: 360
+
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      LADYBIRD_SOURCE_DIR: ${{ github.workspace }}
+      LADYBIRD_VERSION: '2026.11.0'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show source revision
+        shell: bash
+        run: git log -1 --format='%H %ci %s'
+
+      - name: Free disk space (macOS runners are tight)
+        shell: bash
+        run: |
+          df -h /
+          # Keep only the default Xcode; each old one costs ~8-12 GB
+          sudo rm -rf /Applications/Xcode_16.0.app /Applications/Xcode_16.0.0.app \
+            /Applications/Xcode_16.1.app /Applications/Xcode_16.1.0.app \
+            /Applications/Xcode_16.2.app /Applications/Xcode_16.2.0.app \
+            /Applications/Xcode_16.3.app /Applications/Xcode_16.3.0.app || true
+          # Simulator runtimes are not needed to build a Mac app
+          sudo rm -rf /Library/Developer/CoreSimulator/Profiles/Runtimes || true
+          xcrun simctl delete all || true
+          brew cleanup -s || true
+          rm -rf ~/Library/Caches || true
+          df -h /
+
+      - name: Restore ccache + vcpkg caches
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            .ccache
+            Build/caches/vcpkg-binary-cache
+            caches/WasmSpecTests
+          key: ladybird-macos-arm64-Distribution-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'Meta/CMake/wasm_spec_tests.cmake') }}
+          restore-keys: |
+            ladybird-macos-arm64-Distribution-
+
+      - name: Select Xcode (whatever the runner has)
+        shell: bash
+        run: |
+          ls /Applications | grep -i xcode || true
+          xcodebuild -version || true
+          # Use the default Xcode on the runner (Xcode 16.x on macos-15;
+          # upstream code supports Xcode 15+, and needs 16.3+).
+          sudo xcode-select -p || true
+
+      - name: Install dependencies (brew)
+        shell: bash
+        run: |
+          brew update
+          brew unlink openssl@3 || true
+          brew install autoconf autoconf-archive automake bash ccache \
+            coreutils libtool llvm@22 nasm ninja pkg-config unzip xz
+          echo "$(brew --prefix llvm@22)/bin" >> "$GITHUB_PATH"
+          ccache --max-size=6G || true
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Warm up the pinned Rust toolchain
+        shell: bash
+        run: |
+          rustup show
+          cargo --version
+
+      - name: Set up Python (mirrors upstream setup action)
+        uses: actions/setup-python@v7
+        with:
+          python-version: 3.12
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install Python deps
+        shell: bash
+        run: |
+          python3 -m pip install --upgrade pip
+          pip3 install -r requirements.txt
+
+      - name: Install wasm-tools (mirrors upstream setup action)
+        shell: bash
+        run: |
+          VERSION=1.243.0
+          NAME="wasm-tools-1.243.0-aarch64-macos"
+          if [ ! -d "${GITHUB_WORKSPACE}/wasm-tools" ]; then
+            delays=(5 15 45)
+            attempt=1
+            until curl --fail --location --output "${NAME}.tar.gz" \
+              "https://github.com/bytecodealliance/wasm-tools/releases/download/v${VERSION}/${NAME}.tar.gz"; do
+              if (( attempt > ${#delays[@]} )); then
+                echo "wasm-tools download failed after $(( ${#delays[@]} + 1 )) attempts" >&2
+                exit 1
+              fi
+              echo "wasm-tools download failed; retrying in ${delays[attempt-1]}s" >&2
+              sleep "${delays[attempt-1]}"
+              attempt=$(( attempt + 1 ))
+            done
+            tar -xzf "${NAME}.tar.gz"
+            rm "${NAME}.tar.gz"
+            mv "${NAME}" wasm-tools
+          fi
+          echo "${GITHUB_WORKSPACE}/wasm-tools" >> "$GITHUB_PATH"
+
+      - name: Fetch cargo dependencies
+        shell: bash
+        run: |
+          for manifest in Cargo.toml Libraries/LibJS/Flap/Cargo.toml; do
+            if [ -f "${manifest}" ]; then
+              cargo fetch --locked --manifest-path "${manifest}"
+            fi
+          done
+
+      - name: Bootstrap vcpkg (mirrors upstream setup action)
+        shell: bash
+        run: ./Meta/ladybird.py vcpkg --preset Distribution
+
+      - name: Configure (Distribution)
+        shell: bash
+        run: |
+          echo "CC=$(xcrun --find clang)" >> "$GITHUB_ENV"
+          echo "CXX=$(xcrun --find clang++)" >> "$GITHUB_ENV"
+          CC="$(xcrun --find clang)" CXX="$(xcrun --find clang++)" \
+            cmake --preset Distribution \
+            -DPython3_EXECUTABLE="${pythonLocation}/bin/python" \
+            -DLADYBIRD_VERSION="${LADYBIRD_VERSION}" \
+            -DLADYBIRD_GENERATE_SYMBOL_FILES=OFF \
+            -DBUILD_TESTING=OFF
+
+      - name: Prune vcpkg buildtrees (reclaim ~10-20 GB)
+        shell: bash
+        run: |
+          rm -rf Build/vcpkg-distribution/buildtrees || true
+          df -h /
+
+      - name: Build browser + helpers
+        shell: bash
+        run: |
+          echo "CCACHE_COMPILERCHECK=%compiler% -v" >> "$GITHUB_ENV"
+          # ladybird pulls in every helper process (WebContent, Hub, ...);
+          # WebDriver is installed into the bundle too. Building only these
+          # targets avoids the REPL/test binaries and their long static links.
+          cmake --build --preset Distribution --target ladybird WebDriver
+
+      - name: Save ccache + vcpkg caches
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .ccache
+            Build/caches/vcpkg-binary-cache
+            caches/WasmSpecTests
+          key: ladybird-macos-arm64-Distribution-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'Meta/CMake/wasm_spec_tests.cmake') }}-${{ github.run_id }}
+
+      - name: Install (relocatable bundle)
+        shell: bash
+        run: |
+          cmake --install Build/distribution --strip --prefix "${GITHUB_WORKSPACE}/Install" \
+            --component ladybird_Runtime
+          echo "--- install tree ---"
+          # NOTE: `| head` tripped pipefail on macOS (SIGPIPE) and failed the
+          # step even though install had succeeded. Don't pipe find to head.
+          find Install -maxdepth 3 > /tmp/install-tree.txt || true
+          head -30 /tmp/install-tree.txt
+          test -d Install/bundle/Ladybird.app || (echo "::error::installed Ladybird.app not found"; exit 1)
+
+      - name: Verify app bundle
+        shell: bash
+        run: |
+          # No absolute runner paths may survive (would break on any other Mac)
+          if grep -r -l "/Users/runner/work" Install/bundle/Ladybird.app/Contents/MacOS 2>/dev/null | head -3; then
+            echo "WARNING: bundle references runner build paths (see above)"
+          fi
+          # Ad-hoc re-sign so it launches on your Mac without a paid cert
+          codesign -s - -v -f --deep Install/bundle/Ladybird.app
+          codesign --verify --deep --strict --verbose=2 Install/bundle/Ladybird.app
+          codesign -dv Install/bundle/Ladybird.app 2>&1 | head -10 || true
+          du -sh Install/bundle/Ladybird.app
+          ls -lh Install/bundle/Ladybird.app/Contents/MacOS
+
+      - name: Package (.zip, .dmg, .tar.xz)
+        shell: bash
+        run: |
+          cd Install/bundle
+          ditto -c -k --sequesterRsrc --keepParent Ladybird.app Ladybird-macOS-arm64.zip
+          hdiutil create -volname Ladybird -srcfolder Ladybird.app -ov -format UDZO Ladybird-macOS-arm64.dmg
+          tar -cJf Ladybird-macOS-arm64.tar.xz Ladybird.app
+          ls -lh Ladybird-macOS-arm64.*
+
+      - name: Upload Ladybird.app (zip)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ladybird-macOS-arm64-zip
+          path: Install/bundle/Ladybird-macOS-arm64.zip
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Upload Ladybird.app (dmg)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ladybird-macOS-arm64-dmg
+          path: Install/bundle/Ladybird-macOS-arm64.dmg
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Upload Ladybird.app (tar.xz)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ladybird-macOS-arm64-tarxz
+          path: Install/bundle/Ladybird-macOS-arm64.tar.xz
+          compression-level: 0
+          if-no-files-found: error
